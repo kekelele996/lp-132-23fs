@@ -1,23 +1,21 @@
 import { useState, useEffect } from 'react';
-import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form } from 'antd';
+import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form, Tooltip } from 'antd';
 import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { careNeedsApi, favoriteApi, reviewApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import { useNavigate } from 'react-router-dom';
+import {
+  careTypes,
+  careTypeMap,
+  isVolunteerCareType,
+  parseSkills,
+  skillLabel,
+} from '../constants/careSkills';
 
 const { Search } = Input;
 const { Option } = Select;
 const { Meta } = Card;
-
-const careTypeMap: Record<string, { label: string; color: string }> = {
-  health_check: { label: '健康检查', color: 'blue' },
-  accompany: { label: '陪同就医', color: 'green' },
-  daily_care: { label: '日常照料', color: 'orange' },
-  shopping: { label: '代购代办', color: 'purple' },
-  companionship: { label: '聊天陪伴', color: 'pink' },
-  other: { label: '其他', color: 'default' },
-};
 
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: '待接单', color: 'orange' },
@@ -37,6 +35,21 @@ const NeedSquare = () => {
   const [reviewModal, setReviewModal] = useState(false);
   const [reviewForm] = Form.useForm();
   const [favorites, setFavorites] = useState<any[]>([]);
+
+  // 当前登录护工/志愿者已具备的技能
+  const mySkills = new Set(parseSkills(user?.skills));
+
+  // 接单前核对：志愿者服务范围 + 技能是否齐备。返回不能接单的原因，可接则返回 null
+  const getAcceptBlockReason = (item: any): string | null => {
+    if (user?.role === 'volunteer' && !isVolunteerCareType(item.care_type)) {
+      return `志愿者仅可参与陪诊、代购代办、聊天陪伴、日常陪伴，不能接「${careTypeMap[item.care_type]?.label ?? '该'}」专业护理`;
+    }
+    const missing = parseSkills(item.required_skills).filter((skill) => !mySkills.has(skill));
+    if (missing.length > 0) {
+      return `技能不匹配，缺少：${missing.map(skillLabel).join('、')}`;
+    }
+    return null;
+  };
 
   const fetchNeeds = async (params?: any) => {
     setLoading(true);
@@ -72,6 +85,7 @@ const NeedSquare = () => {
       message.success('接单成功');
       fetchNeeds();
     } catch (error: any) {
+      // 后端会明确说明缺少哪项技能 / 是否为志愿者不可接的专业护理
       message.error(error.response?.data?.message || '接单失败');
     }
   };
@@ -157,6 +171,55 @@ const NeedSquare = () => {
     navigate('/messages', { state: { userId } });
   };
 
+  // 待接单卡片上的接单按钮：不满足条件时禁用并提示缺什么
+  const renderAcceptAction = (item: any) => {
+    if (item.status !== 'pending' || !(user?.role === 'worker' || user?.role === 'volunteer')) {
+      return null;
+    }
+    const reason = getAcceptBlockReason(item);
+    if (reason) {
+      return (
+        <Tooltip title={reason}>
+          <Button type="primary" size="small" disabled>
+            不符合接单条件
+          </Button>
+        </Tooltip>
+      );
+    }
+    return (
+      <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleAccept(item.id); }}>
+        接单
+      </Button>
+    );
+  };
+
+  // 卡片上展示家属勾选的技能要求
+  const renderRequiredSkills = (item: any, wrap = false) => {
+    const skills = parseSkills(item.required_skills);
+    if (skills.length === 0) return null;
+    const canAccept = user?.role === 'worker' || user?.role === 'volunteer';
+    return (
+      <div className={`flex items-start text-gray-500 text-sm ${wrap ? 'flex-wrap gap-1' : ''}`}>
+        <span className="shrink-0 mr-1">技能要求：</span>
+        <span className={wrap ? '' : 'truncate'}>
+          {skills.map((skill) => {
+            const owned = !canAccept || mySkills.has(skill);
+            return (
+              <Tag
+                key={skill}
+                color={owned ? 'geekblue' : 'red'}
+                className="mb-1"
+              >
+                {skillLabel(skill)}
+                {canAccept && !owned ? '（未具备）' : ''}
+              </Tag>
+            );
+          })}
+        </span>
+      </div>
+    );
+  };
+
   return (
     <div>
       <div className="mb-6 flex justify-between items-center">
@@ -168,12 +231,11 @@ const NeedSquare = () => {
             allowClear
             onChange={(value) => fetchNeeds({ care_type: value })}
           >
-            <Option value="health_check">健康检查</Option>
-            <Option value="accompany">陪同就医</Option>
-            <Option value="daily_care">日常照料</Option>
-            <Option value="shopping">代购代办</Option>
-            <Option value="companionship">聊天陪伴</Option>
-            <Option value="other">其他</Option>
+            {careTypes.map((type) => (
+              <Option key={type.value} value={type.value}>
+                {type.label}
+              </Option>
+            ))}
           </Select>
           <Select
             placeholder="订单状态"
@@ -207,11 +269,7 @@ const NeedSquare = () => {
               onClick={() => openDetail(item)}
               className="h-full"
               actions={[
-                item.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') ? (
-                  <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleAccept(item.id); }}>
-                    接单
-                  </Button>
-                ) : null,
+                renderAcceptAction(item),
                 item.status === 'accepted' && item.worker_id === user?.id ? (
                   <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleStart(item.id); }}>
                     开始服务
@@ -247,12 +305,13 @@ const NeedSquare = () => {
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center text-gray-600">
                       <Tag color={careTypeMap[item.care_type]?.color}>
-                        {careTypeMap[item.care_type]?.label}
+                        {careTypeMap[item.care_type]?.label ?? item.care_type}
                       </Tag>
                       <span className="ml-2 text-orange-500 font-medium">
                         ¥{item.price}
                       </span>
                     </div>
+                    {renderRequiredSkills(item)}
                     <div className="flex items-center text-gray-500 text-sm">
                       <ClockCircleOutlined className="mr-1" />
                       {dayjs(item.start_time).format('YYYY-MM-DD HH:mm')}
@@ -298,8 +357,29 @@ const NeedSquare = () => {
               <div className="flex">
                 <span className="w-24 text-gray-500">服务类型：</span>
                 <Tag color={careTypeMap[selectedNeed.care_type]?.color}>
-                  {careTypeMap[selectedNeed.care_type]?.label}
+                  {careTypeMap[selectedNeed.care_type]?.label ?? selectedNeed.care_type}
                 </Tag>
+                {user?.role === 'volunteer' && !isVolunteerCareType(selectedNeed.care_type) && (
+                  <Tag color="red">志愿者不可接</Tag>
+                )}
+              </div>
+              <div className="flex">
+                <span className="w-24 text-gray-500 shrink-0">技能要求：</span>
+                <div>
+                  {parseSkills(selectedNeed.required_skills).length === 0 ? (
+                    <span className="text-gray-400">无特殊要求</span>
+                  ) : (
+                    parseSkills(selectedNeed.required_skills).map((skill) => {
+                      const owned = !(user?.role === 'worker' || user?.role === 'volunteer') || mySkills.has(skill);
+                      return (
+                        <Tag key={skill} color={owned ? 'geekblue' : 'red'} className="mb-1">
+                          {skillLabel(skill)}
+                          {!owned ? '（您未具备）' : ''}
+                        </Tag>
+                      );
+                    })
+                  )}
+                </div>
               </div>
               <div className="flex">
                 <span className="w-24 text-gray-500">服务价格：</span>
@@ -318,6 +398,13 @@ const NeedSquare = () => {
                 <span>{selectedNeed.address}</span>
               </div>
             </div>
+
+            {selectedNeed.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') &&
+              getAcceptBlockReason(selectedNeed) && (
+              <div className="bg-red-50 border border-red-200 text-red-600 p-3 rounded-lg text-sm">
+                暂时无法接单：{getAcceptBlockReason(selectedNeed)}
+              </div>
+            )}
 
             <div className="bg-blue-50 p-4 rounded-lg">
               <h3 className="font-medium mb-2">服务内容</h3>
@@ -362,9 +449,15 @@ const NeedSquare = () => {
 
             <div className="flex justify-end space-x-3 pt-4">
               {selectedNeed.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') && (
-                <Button type="primary" onClick={() => handleAccept(selectedNeed.id)}>
-                  接单
-                </Button>
+                getAcceptBlockReason(selectedNeed) ? (
+                  <Tooltip title={getAcceptBlockReason(selectedNeed) as string}>
+                    <Button type="primary" disabled>不符合接单条件</Button>
+                  </Tooltip>
+                ) : (
+                  <Button type="primary" onClick={() => handleAccept(selectedNeed.id)}>
+                    接单
+                  </Button>
+                )
               )}
               {selectedNeed.status === 'accepted' && selectedNeed.worker_id === user?.id && (
                 <Button type="primary" onClick={() => handleStart(selectedNeed.id)}>

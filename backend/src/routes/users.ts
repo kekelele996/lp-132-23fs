@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
+import { formatSkillText, normalizeSkillInput, professionalSkillSet, skillLabel } from '../constants/careSkills';
 
 const router = Router();
 
@@ -26,9 +27,25 @@ router.put('/profile', authenticate, async (req: AuthRequest, res: Response) => 
   try {
     const { real_name, gender, age, address, avatar, skills, introduction } = req.body;
 
+    let skillText: string | null = null;
+    if (skills !== undefined) {
+      const normalizedSkills = normalizeSkillInput(skills);
+
+      if (req.user?.role === 'volunteer') {
+        const professional = normalizedSkills.filter((skill) => professionalSkillSet.has(skill));
+        if (professional.length > 0) {
+          return res.status(400).json({
+            message: `志愿者不能持有专业护理技能：${professional.map(skillLabel).join('、')}`,
+          });
+        }
+      }
+
+      skillText = req.user?.role === 'child' ? '' : formatSkillText(normalizedSkills);
+    }
+
     const result = await pool.query(
       'UPDATE users SET real_name = COALESCE($1, real_name), gender = COALESCE($2, gender), age = COALESCE($3, age), address = COALESCE($4, address), avatar = COALESCE($5, avatar), skills = COALESCE($6, skills), introduction = COALESCE($7, introduction), updated_at = CURRENT_TIMESTAMP WHERE id = $8 RETURNING id, username, real_name, phone, role, avatar, gender, age, address, skills, introduction',
-      [real_name, gender, age, address, avatar, skills, introduction, req.user?.id]
+      [real_name, gender, age, address, avatar, skillText, introduction, req.user?.id]
     );
 
     res.json({ message: '更新成功', user: result.rows[0] });

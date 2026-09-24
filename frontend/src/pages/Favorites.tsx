@@ -3,6 +3,7 @@ import { Card, List, Button, Rate, Tag, message, Empty, Avatar } from 'antd';
 import { UserOutlined, MessageOutlined, DeleteOutlined } from '@ant-design/icons';
 import { favoriteApi } from '../services/api';
 import { useNavigate } from 'react-router-dom';
+import { parseSkills, skillLabel } from '../constants/careSkills';
 
 const Favorites = () => {
   const navigate = useNavigate();
@@ -69,9 +70,13 @@ const Favorites = () => {
                   <div className="mt-2">
                     <Tag color="blue">已完成 {item.order_count} 单</Tag>
                   </div>
-                  {item.skills && (
+                  {parseSkills(item.skills).length > 0 && (
                     <div className="mt-3 text-sm text-gray-600">
-                      技能：{item.skills}
+                      {parseSkills(item.skills).map((skill) => (
+                        <Tag key={skill} color="geekblue" className="mb-1">
+                          {skillLabel(skill)}
+                        </Tag>
+                      ))}
                     </div>
                   )}
                   {item.introduction && (

@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Card, Form, Input, Button, Avatar, message, Card as AntCard } from 'antd';
+import { Card, Form, Input, Button, Avatar, message, Card as AntCard, Select, Alert } from 'antd';
 import { UserOutlined, EditOutlined, SaveOutlined, CloseOutlined } from '@ant-design/icons';
 import { userApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import { careSkills, parseSkills } from '../constants/careSkills';
 
 const { TextArea } = Input;
+
+const professionalSkills = careSkills.filter((skill) => skill.professional);
+const generalSkills = careSkills.filter((skill) => !skill.professional);
 
 const Profile = () => {
   const { user, setUser } = useAuthStore();
@@ -12,21 +16,31 @@ const Profile = () => {
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const isProvider = user?.role === 'worker' || user?.role === 'volunteer';
+
   useEffect(() => {
     if (user) {
-      form.setFieldsValue(user);
+      form.setFieldsValue({
+        ...user,
+        // 旧资料里技能可能是中文自由文本，统一解析为标准编码
+        skills: Array.isArray(user.skills) ? user.skills : parseSkills(user.skills),
+      });
     }
   }, [user, form]);
 
   const handleSubmit = async (values: any) => {
     setLoading(true);
     try {
-      const response = await userApi.updateProfile(values);
+      const response = await userApi.updateProfile({
+        ...values,
+        // 以技能编码数组提交，后端负责校验和落库
+        skills: isProvider ? (values.skills ?? []) : [],
+      });
       setUser(response.data.user);
       message.success('更新成功');
       setEditing(false);
-    } catch (error) {
-      message.error('更新失败');
+    } catch (error: any) {
+      message.error(error.response?.data?.message || '更新失败');
     } finally {
       setLoading(false);
     }
@@ -64,7 +78,7 @@ const Profile = () => {
               <div className="text-sm text-gray-500">评分</div>
               <div className="text-2xl font-bold text-orange-500">{user?.rating || '5.0'}</div>
             </div>
-            {user?.role === 'worker' || user?.role === 'volunteer' ? (
+            {isProvider ? (
               <div className="grid grid-cols-2 gap-4 mt-4">
                 <div className="p-3 bg-blue-50 rounded-lg">
                   <div className="text-sm text-gray-500">接单量</div>
@@ -98,10 +112,48 @@ const Profile = () => {
             <Form.Item name="address" label="地址">
               <Input disabled={!editing} />
             </Form.Item>
-            {(user?.role === 'worker' || user?.role === 'volunteer') && (
+            {isProvider && (
               <>
-                <Form.Item name="skills" label="技能">
-                  <Input disabled={!editing} placeholder="例如：血压测量、打针、输液等" />
+                {user?.role === 'volunteer' && (
+                  <Alert
+                    className="mb-4"
+                    type="info"
+                    showIcon
+                    message="志愿者只能选择「陪伴与生活协助」类技能，专业护理（健康检查、医疗协助等）需要由专业护工完成"
+                  />
+                )}
+                <Form.Item
+                  name="skills"
+                  label="我的护理技能"
+                  extra="发布需求的家属会按这些技能核对，只有全部满足时才能接到对应订单"
+                >
+                  <Select
+                    mode="multiple"
+                    disabled={!editing}
+                    placeholder="请选择您具备的护理技能"
+                    optionFilterProp="children"
+                    allowClear
+                  >
+                    <Select.OptGroup label="专业护理技能（仅护工）">
+                      {professionalSkills.map((skill) => (
+                        <Select.Option
+                          key={skill.value}
+                          value={skill.value}
+                          disabled={!editing || user?.role === 'volunteer'}
+                        >
+                          {skill.label}
+                          {user?.role === 'volunteer' ? '（志愿者不可选）' : ''}
+                        </Select.Option>
+                      ))}
+                    </Select.OptGroup>
+                    <Select.OptGroup label="陪伴与生活协助">
+                      {generalSkills.map((skill) => (
+                        <Select.Option key={skill.value} value={skill.value}>
+                          {skill.label}
+                        </Select.Option>
+                      ))}
+                    </Select.OptGroup>
+                  </Select>
                 </Form.Item>
                 <Form.Item name="introduction" label="个人简介">
                   <TextArea rows={4} disabled={!editing} placeholder="介绍一下自己的服务经验和特长" />

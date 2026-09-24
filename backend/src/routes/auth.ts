@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { env } from '../config/env';
+import { formatSkillText, normalizeSkillInput, professionalSkillSet, skillLabel } from '../constants/careSkills';
 
 const router = Router();
 
@@ -15,16 +16,32 @@ router.post('/register', async (req: Request, res: Response) => {
       return res.status(400).json({ message: '请填写必要信息' });
     }
 
+    if (!['child', 'worker', 'volunteer'].includes(role)) {
+      return res.status(400).json({ message: '角色不合法' });
+    }
+
+    const normalizedSkills = normalizeSkillInput(skills);
+
+    if (role === 'volunteer') {
+      const professional = normalizedSkills.filter((skill) => professionalSkillSet.has(skill));
+      if (professional.length > 0) {
+        return res.status(400).json({
+          message: `志愿者不能持有专业护理技能：${professional.map(skillLabel).join('、')}`,
+        });
+      }
+    }
+
     const existingUser = await pool.query('SELECT id FROM users WHERE username = $1 OR phone = $2', [username, phone]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ message: '用户名或手机号已存在' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const skillText = role === 'child' ? '' : formatSkillText(normalizedSkills);
 
     const result = await pool.query(
       'INSERT INTO users (username, password, real_name, phone, role, gender, age, address, skills, introduction) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, username, real_name, phone, role',
-      [username, hashedPassword, real_name, phone, role, gender, age, address, skills, introduction]
+      [username, hashedPassword, real_name, phone, role, gender, age, address, skillText, introduction]
     );
 
     const token = jwt.sign(

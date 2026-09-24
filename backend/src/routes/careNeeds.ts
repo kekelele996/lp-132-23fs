@@ -2,6 +2,14 @@ import { Router, Response } from 'express';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
+import {
+  careTypeMap,
+  formatSkillText,
+  isVolunteerCareType,
+  normalizeSkills,
+  parseSkillText,
+  skillLabel,
+} from '../constants/careSkills';
 
 const router = Router();
 
@@ -97,11 +105,17 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
 
 router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, res: Response) => {
   try {
-    const { elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price } = req.body;
+    const { elderly_id, title, description, care_type, required_skills, start_time, end_time, address, duration_hours, price } = req.body;
 
     if (!elderly_id || !title || !description || !care_type || !start_time || !address) {
       return res.status(400).json({ message: '请填写必要信息' });
     }
+
+    if (!careTypeMap[care_type]) {
+      return res.status(400).json({ message: '服务类型不合法' });
+    }
+
+    const skills = normalizeSkills(required_skills);
 
     const elderlyCheck = await pool.query(
       'SELECT id FROM elderly_profiles WHERE id = $1 AND child_id = $2',
@@ -113,8 +127,8 @@ router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, re
     }
 
     const result = await pool.query(
-      'INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
-      [req.user?.id, elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price]
+      'INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, required_skills, start_time, end_time, address, duration_hours, price) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+      [req.user?.id, elderly_id, title, description, care_type, formatSkillText(skills), start_time, end_time, address, duration_hours, price]
     );
 
     res.status(201).json({ message: '发布成功', need: result.rows[0] });
@@ -126,22 +140,57 @@ router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, re
 router.post('/:id/accept', authenticate, requireRole('worker', 'volunteer'), async (req: AuthRequest, res: Response) => {
   try {
     const checkResult = await pool.query(
-      'SELECT status FROM care_needs WHERE id = $1',
-      [req.params.id]
+      `SELECT cn.status, cn.care_type, cn.required_skills, u.skills AS user_skills
+       FROM care_needs cn
+       JOIN users u ON u.id = $2
+       WHERE cn.id = $1`,
+      [req.params.id, req.user?.id]
     );
 
     if (checkResult.rows.length === 0) {
       return res.status(404).json({ message: '需求不存在' });
     }
 
-    if (checkResult.rows[0].status !== 'pending') {
-      return res.status(400).json({ message: '该需求已被接单' });
+    const need = checkResult.rows[0];
+
+    // 先把所有不满足的条件核对清楚，再决定是否占用订单，
+    // 避免先接单成功再因能力不符被退回。
+    if (need.status !== 'pending') {
+      return res.status(400).json({ message: '该需求已被接单', code: 'NOT_PENDING' });
     }
 
+    const isVolunteer = req.user?.role === 'volunteer';
+
+    if (isVolunteer && !isVolunteerCareType(need.care_type)) {
+      return res.status(403).json({
+        message: `志愿者仅可参与陪诊、代购代办、聊天陪伴、日常陪伴，不能接「${careTypeMap[need.care_type]?.label ?? need.care_type}」这类专业护理`,
+        code: 'VOLUNTEER_NOT_ALLOWED',
+      });
+    }
+
+    const requiredSkills = parseSkillText(need.required_skills);
+    const userSkills = new Set(parseSkillText(need.user_skills));
+    const missingSkills = requiredSkills.filter((skill) => !userSkills.has(skill));
+
+    if (missingSkills.length > 0) {
+      return res.status(403).json({
+        message: `技能不匹配，缺少：${missingSkills.map(skillLabel).join('、')}`,
+        code: 'SKILL_MISMATCH',
+        missing_skills: missingSkills,
+        missing_skill_labels: missingSkills.map(skillLabel),
+      });
+    }
+
+    // 资格核对通过后再原子占单，并发抢单时只有一个请求能成功
     const result = await pool.query(
-      'UPDATE care_needs SET status = $1, worker_id = $2, accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *',
-      ['accepted', req.user?.id, req.params.id]
+      `UPDATE care_needs SET status = 'accepted', worker_id = $2, accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'pending' RETURNING *`,
+      [req.params.id, req.user?.id]
     );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ message: '手慢了，该需求刚刚被他人接单', code: 'TAKEN' });
+    }
 
     res.json({ message: '接单成功', need: result.rows[0] });
   } catch (error) {

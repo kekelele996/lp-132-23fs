@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS care_needs (
     title VARCHAR(100) NOT NULL,
     description TEXT NOT NULL,
     care_type VARCHAR(50) NOT NULL,
+    required_skills TEXT DEFAULT '',
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP,
     address TEXT NOT NULL,
@@ -107,6 +108,9 @@ CREATE TABLE IF NOT EXISTS worker_schedules (
     UNIQUE(worker_id, date, shift_type)
 );
 
+-- 已有部署升级：照护需求增加「技能要求」列（逗号分隔的技能编码）
+ALTER TABLE care_needs ADD COLUMN IF NOT EXISTS required_skills TEXT DEFAULT '';
+
 -- 创建索引
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_elderly_child ON elderly_profiles(child_id);
@@ -123,14 +127,15 @@ CREATE INDEX IF NOT EXISTS idx_schedules_date ON worker_schedules(date);
 -- 插入测试数据 (密码统一为: 123456)
 INSERT INTO users (username, password, real_name, phone, role, age, address, skills, introduction) VALUES
 ('child1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '张小明', '13800138001', 'child', 35, '北京市朝阳区', '', '孝顺的儿子'),
-('worker1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '李护工', '13800138002', 'worker', 40, '北京市海淀区', '血压测量、打针、输液', '有10年护理经验'),
-('worker2', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '王护士', '13800138003', 'worker', 35, '北京市朝阳区', '康复训练、日常照料', '专业康复护士'),
-('volunteer1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '赵志愿', '13800138004', 'volunteer', 25, '北京市东城区', '聊天陪伴', '大学生志愿者'),
+('worker1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '李护工', '13800138002', 'worker', 40, '北京市海淀区', 'blood_pressure,blood_glucose,injection,infusion', '有10年护理经验'),
+('worker2', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '王护士', '13800138003', 'worker', 35, '北京市朝阳区', 'rehabilitation,daily_care,medication_management', '专业康复护士'),
+('volunteer1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '赵志愿', '13800138004', 'volunteer', 25, '北京市东城区', 'companionship,shopping,accompany_visit', '大学生志愿者'),
 ('admin1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '管理员', '13800138000', 'admin', 30, '北京市', '', '系统管理员');
 
 INSERT INTO elderly_profiles (child_id, name, gender, age, phone, medical_history, medication, address, emergency_contact, emergency_phone, notes) VALUES
 ((SELECT id FROM users WHERE username = 'child1'), '张大爷', '男', 78, '13900139001', '高血压、糖尿病', '降压药、胰岛素', '北京市朝阳区幸福小区3号楼2单元501', '张小明', '13800138001', '喜欢下棋，需要有人陪同散步');
 
-INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, start_time, address, duration_hours, price) VALUES
-((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '上门量血压', '每周三下午上门给老人量血压，记录数据', 'health_check', '2024-01-10 14:00:00', '北京市朝阳区幸福小区3号楼2单元501', 1.0, 80.00),
-((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪同就医', '下周一陪同老人去医院复查', 'accompany', '2024-01-15 08:00:00', '北京市朝阳区幸福小区3号楼2单元501', 4.0, 300.00);
+INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, required_skills, start_time, address, duration_hours, price) VALUES
+((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '上门量血压', '每周三下午上门给老人量血压，记录数据', 'health_check', 'blood_pressure', '2024-01-10 14:00:00', '北京市朝阳区幸福小区3号楼2单元501', 1.0, 80.00),
+((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪同就医', '下周一陪同老人去医院复查', 'accompany', 'accompany_visit', '2024-01-15 08:00:00', '北京市朝阳区幸福小区3号楼2单元501', 4.0, 300.00),
+((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪老人聊天散步', '周末来家里陪老人说说话、下下棋、下楼散散步', 'daily_companionship', 'companionship,walking', '2024-01-20 09:00:00', '北京市朝阳区幸福小区3号楼2单元501', 2.0, 60.00);
