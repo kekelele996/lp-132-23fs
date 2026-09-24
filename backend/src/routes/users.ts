@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
+import { parseSkillCodes, findInvalidSkill, filterProfessionalSkills, skillLabel } from '../constants/skills';
 
 const router = Router();
 
@@ -24,7 +25,26 @@ router.get('/profile', authenticate, async (req: AuthRequest, res: Response) => 
 
 router.put('/profile', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { real_name, gender, age, address, avatar, skills, introduction } = req.body;
+    const { real_name, gender, age, address, avatar, introduction } = req.body;
+
+    // 技能字段支持数组或逗号分隔字符串，统一为编码存储
+    let skills: string | null = null;
+    if (req.body.skills !== undefined) {
+      const skillCodes = parseSkillCodes(req.body.skills);
+      const invalidSkill = findInvalidSkill(skillCodes);
+      if (invalidSkill) {
+        return res.status(400).json({ message: `存在未知的护理技能：${invalidSkill}` });
+      }
+      if (req.user?.role === 'volunteer') {
+        const professional = filterProfessionalSkills(skillCodes);
+        if (professional.length > 0) {
+          return res.status(400).json({
+            message: `志愿者不能登记专业护理技能「${professional.map(skillLabel).join('、')}」，志愿者可参与陪诊、聊天、代购和日常陪伴`,
+          });
+        }
+      }
+      skills = skillCodes.join(',');
+    }
 
     const result = await pool.query(
       'UPDATE users SET real_name = COALESCE($1, real_name), gender = COALESCE($2, gender), age = COALESCE($3, age), address = COALESCE($4, address), avatar = COALESCE($5, avatar), skills = COALESCE($6, skills), introduction = COALESCE($7, introduction), updated_at = CURRENT_TIMESTAMP WHERE id = $8 RETURNING id, username, real_name, phone, role, avatar, gender, age, address, skills, introduction',

@@ -3,6 +3,7 @@ import { Card, List, Button, Rate, Tag, message, Empty, Avatar } from 'antd';
 import { UserOutlined, MessageOutlined, DeleteOutlined } from '@ant-design/icons';
 import { favoriteApi } from '../services/api';
 import { useNavigate } from 'react-router-dom';
+import { parseSkillCodes, skillLabel, isProfessionalSkill } from '../constants/skills';
 
 const Favorites = () => {
   const navigate = useNavigate();
@@ -71,7 +72,14 @@ const Favorites = () => {
                   </div>
                   {item.skills && (
                     <div className="mt-3 text-sm text-gray-600">
-                      技能：{item.skills}
+                      <div className="mb-1">技能：</div>
+                      <div className="flex flex-wrap justify-center gap-1">
+                        {parseSkillCodes(item.skills).map((code) => (
+                          <Tag key={code} color={isProfessionalSkill(code) ? 'red' : 'cyan'}>
+                            {skillLabel(code)}
+                          </Tag>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {item.introduction && (

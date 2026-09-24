@@ -2,6 +2,13 @@ import { Router, Response } from 'express';
 import pool from '../config/database';
 import { sendServerError } from '../utils/httpResponses';
 import { AuthRequest, authenticate, requireRole } from '../middleware/auth';
+import {
+  VOLUNTEER_ALLOWED_CARE_TYPES,
+  parseSkillCodes,
+  skillLabel,
+  findInvalidSkill,
+  filterProfessionalSkills,
+} from '../constants/skills';
 
 const router = Router();
 
@@ -61,15 +68,16 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const result = await pool.query(
-      `SELECT cn.*, e.name as elderly_name, e.gender as elderly_gender, e.age as elderly_age, 
+      `SELECT cn.*, e.name as elderly_name, e.gender as elderly_gender, e.age as elderly_age,
               e.medical_history, e.medication, e.address as elderly_address,
               e.emergency_contact, e.emergency_phone,
               u.real_name as child_name, u.phone as child_phone,
-              w.real_name as worker_name, w.phone as worker_phone
-       FROM care_needs cn 
-       LEFT JOIN elderly_profiles e ON cn.elderly_id = e.id 
-       LEFT JOIN users u ON cn.child_id = u.id 
-       LEFT JOIN users w ON cn.worker_id = w.id 
+              w.real_name as worker_name, w.phone as worker_phone,
+              w.skills as worker_skills
+       FROM care_needs cn
+       LEFT JOIN elderly_profiles e ON cn.elderly_id = e.id
+       LEFT JOIN users u ON cn.child_id = u.id
+       LEFT JOIN users w ON cn.worker_id = w.id
        WHERE cn.id = $1`,
       [req.params.id]
     );
@@ -98,9 +106,19 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
 router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, res: Response) => {
   try {
     const { elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price } = req.body;
+    const required_skills = parseSkillCodes(req.body.required_skills);
 
     if (!elderly_id || !title || !description || !care_type || !start_time || !address) {
       return res.status(400).json({ message: '请填写必要信息' });
+    }
+
+    if (required_skills.length === 0) {
+      return res.status(400).json({ message: '请从护理技能中选择本需求要求的能力' });
+    }
+
+    const invalidSkill = findInvalidSkill(required_skills);
+    if (invalidSkill) {
+      return res.status(400).json({ message: `存在未知的护理技能：${invalidSkill}` });
     }
 
     const elderlyCheck = await pool.query(
@@ -113,8 +131,9 @@ router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, re
     }
 
     const result = await pool.query(
-      'INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
-      [req.user?.id, elderly_id, title, description, care_type, start_time, end_time, address, duration_hours, price]
+      `INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, required_skills, start_time, end_time, address, duration_hours, price)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [req.user?.id, elderly_id, title, description, care_type, required_skills, start_time, end_time, address, duration_hours, price]
     );
 
     res.status(201).json({ message: '发布成功', need: result.rows[0] });
@@ -124,28 +143,75 @@ router.post('/', authenticate, requireRole('child'), async (req: AuthRequest, re
 });
 
 router.post('/:id/accept', authenticate, requireRole('worker', 'volunteer'), async (req: AuthRequest, res: Response) => {
+  const client = await pool.connect();
   try {
-    const checkResult = await pool.query(
-      'SELECT status FROM care_needs WHERE id = $1',
-      [req.params.id]
+    // 全程在一个事务里：行锁先锁定需求 -> 校验状态/角色/技能 -> 全部通过才更新为已接单，
+    // 避免“先占单再因资格不符退回”，也避免两人同时接单。
+    await client.query('BEGIN');
+
+    const lockResult = await client.query(
+      `SELECT cn.status, cn.care_type, cn.required_skills, u.role as worker_role, u.skills as worker_skills
+       FROM care_needs cn
+       JOIN users u ON u.id = $2
+       WHERE cn.id = $1
+       FOR UPDATE OF cn`,
+      [req.params.id, req.user?.id]
     );
 
-    if (checkResult.rows.length === 0) {
+    if (lockResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: '需求不存在' });
     }
 
-    if (checkResult.rows[0].status !== 'pending') {
+    const need = lockResult.rows[0];
+
+    if (need.status !== 'pending') {
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: '该需求已被接单' });
     }
 
-    const result = await pool.query(
+    const requiredSkills: string[] = need.required_skills || [];
+
+    // 志愿者只参与陪诊、聊天、代购和日常陪伴，不接健康检查、医疗协助等专业护理
+    if (need.worker_role === 'volunteer') {
+      const professionalRequired = filterProfessionalSkills(requiredSkills);
+      if (!VOLUNTEER_ALLOWED_CARE_TYPES.includes(need.care_type) || professionalRequired.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          message: '该需求包含健康检查、医疗协助等专业护理内容，志愿者不能接单；志愿者可承接陪诊、聊天、代购和日常陪伴类需求',
+          code: 'PROFESSIONAL_CARE_NOT_ALLOWED',
+          professional_skills: professionalRequired.map((code) => ({ code, label: skillLabel(code) })),
+        });
+      }
+    }
+
+    // 核对技能是否齐备，明确返回缺少的每一项能力
+    const ownedSkills = new Set(parseSkillCodes(need.worker_skills));
+    const missingSkills = requiredSkills.filter((code) => !ownedSkills.has(code));
+
+    if (missingSkills.length > 0) {
+      await client.query('ROLLBACK');
+      const missingLabels = missingSkills.map(skillLabel);
+      return res.status(403).json({
+        message: `接单失败：您缺少本需求要求的护理技能「${missingLabels.join('、')}」`,
+        code: 'SKILL_NOT_MATCH',
+        missing_skills: missingSkills.map((code) => ({ code, label: skillLabel(code) })),
+      });
+    }
+
+    const result = await client.query(
       'UPDATE care_needs SET status = $1, worker_id = $2, accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *',
       ['accepted', req.user?.id, req.params.id]
     );
 
+    await client.query('COMMIT');
+
     res.json({ message: '接单成功', need: result.rows[0] });
   } catch (error) {
+    await client.query('ROLLBACK');
     sendServerError(res, error);
+  } finally {
+    client.release();
   }
 });
 

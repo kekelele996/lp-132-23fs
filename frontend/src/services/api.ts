@@ -56,6 +56,10 @@ export const careNeedsApi = {
   cancel: (id: string) => api.post(`/care-needs/${id}/cancel`),
 };
 
+export const skillsApi = {
+  getCatalog: () => api.get('/skills/catalog'),
+};
+
 export const reviewApi = {
   create: (data: any) => api.post('/reviews', data),
   getByOrder: (orderId: string) => api.get(`/reviews/order/${orderId}`),

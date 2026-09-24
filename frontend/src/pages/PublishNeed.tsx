@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Card, Form, Input, Select, DatePicker, InputNumber, Button, message, Row, Col } from 'antd';
+import { Card, Form, Input, Select, DatePicker, InputNumber, Button, message, Row, Col, Alert, Tag } from 'antd';
 import { elderlyApi, careNeedsApi } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
+import { PROFESSIONAL_SKILLS, GENERAL_SKILLS } from '../constants/skills';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -10,7 +11,8 @@ const { RangePicker } = DatePicker;
 
 const careTypes = [
   { value: 'health_check', label: '健康检查' },
-  { value: 'accompany', label: '陪同就医' },
+  { value: 'medical_assist', label: '医疗协助' },
+  { value: 'accompany', label: '陪诊陪同' },
   { value: 'daily_care', label: '日常照料' },
   { value: 'shopping', label: '代购代办' },
   { value: 'companionship', label: '聊天陪伴' },
@@ -22,6 +24,12 @@ const PublishNeed = () => {
   const [form] = Form.useForm();
   const [elderlyList, setElderlyList] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const selectedCareType = Form.useWatch('care_type', form);
+  const selectedSkills: string[] = Form.useWatch('required_skills', form) || [];
+
+  const pickedProfessional = selectedSkills.filter((code) =>
+    PROFESSIONAL_SKILLS.some((s) => s.code === code)
+  );
 
   useEffect(() => {
     const fetchElderly = async () => {
@@ -126,6 +134,61 @@ const PublishNeed = () => {
               placeholder="请详细描述您的需求，包括服务内容、注意事项等"
             />
           </Form.Item>
+
+          <Form.Item
+            name="required_skills"
+            label="护理技能要求"
+            rules={[{ required: true, message: '请从护理技能中选择要求' }]}
+            extra="系统会在接单时逐项核对：只有具备全部所选技能的服务者才能接此单。"
+          >
+            <Select
+              mode="multiple"
+              placeholder="请选择本需求要求的护理能力（可多选）"
+              optionFilterProp="label"
+            >
+              <Select.OptGroup label="专业护理（健康检查、医疗协助类，仅专业护工可接）">
+                {PROFESSIONAL_SKILLS.map((skill) => (
+                  <Option key={skill.code} value={skill.code} label={skill.label}>
+                    {skill.label}
+                  </Option>
+                ))}
+              </Select.OptGroup>
+              <Select.OptGroup label="一般照护（陪诊、聊天、代购、日常陪伴，志愿者也可接）">
+                {GENERAL_SKILLS.map((skill) => (
+                  <Option key={skill.code} value={skill.code} label={skill.label}>
+                    {skill.label}
+                  </Option>
+                ))}
+              </Select.OptGroup>
+            </Select>
+          </Form.Item>
+
+          {pickedProfessional.length > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              className="mb-4"
+              message={
+                <span>
+                  已选择专业护理技能
+                  {pickedProfessional.map((code) => (
+                    <Tag key={code} color="red" className="ml-1">
+                      {PROFESSIONAL_SKILLS.find((s) => s.code === code)?.label}
+                    </Tag>
+                  ))}
+                  该订单仅专业护工可接，志愿者无法接单。
+                </span>
+              }
+            />
+          )}
+          {selectedCareType === 'health_check' || selectedCareType === 'medical_assist' ? (
+            <Alert
+              type="warning"
+              showIcon
+              className="mb-4"
+              message="健康检查、医疗协助属于专业护理，志愿者不能承接，请至少选择一项专业护理技能。"
+            />
+          ) : null}
 
           <Row gutter={16}>
             <Col span={12}>

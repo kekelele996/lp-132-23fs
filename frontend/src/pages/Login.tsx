@@ -4,6 +4,7 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import { PROFESSIONAL_SKILLS, GENERAL_SKILLS } from '../constants/skills';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -11,6 +12,8 @@ const { Option } = Select;
 const Login = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [registerForm] = Form.useForm();
+  const registerRole = Form.useWatch('role', registerForm);
   const { setToken, setUser } = useAuthStore();
 
   const handleLogin = async (values: any) => {
@@ -81,6 +84,7 @@ const Login = () => {
       key: 'register',
       children: (
         <Form
+          form={registerForm}
           name="register"
           onFinish={handleRegister}
           autoComplete="off"
@@ -124,6 +128,42 @@ const Login = () => {
               <Option value="volunteer">志愿者</Option>
             </Select>
           </Form.Item>
+
+          {(registerRole === 'worker' || registerRole === 'volunteer') && (
+            <Form.Item
+              name="skills"
+              label="护理技能"
+              extra={
+                registerRole === 'volunteer'
+                  ? '志愿者可参与陪诊、聊天、代购和日常陪伴，不能承接健康检查、医疗协助等专业护理。'
+                  : '请选择您已掌握的护理技能，接单时系统会按家属要求逐项核对。'
+              }
+            >
+              <Select
+                mode="multiple"
+                allowClear
+                placeholder="请选择已掌握的护理技能"
+                optionFilterProp="label"
+              >
+                {registerRole === 'worker' && (
+                  <Select.OptGroup label="专业护理（健康检查、医疗协助类）">
+                    {PROFESSIONAL_SKILLS.map((skill) => (
+                      <Option key={skill.code} value={skill.code} label={skill.label}>
+                        {skill.label}
+                      </Option>
+                    ))}
+                  </Select.OptGroup>
+                )}
+                <Select.OptGroup label="一般照护（陪诊、聊天、代购、日常陪伴）">
+                  {GENERAL_SKILLS.map((skill) => (
+                    <Option key={skill.code} value={skill.code} label={skill.label}>
+                      {skill.label}
+                    </Option>
+                  ))}
+                </Select.OptGroup>
+              </Select>
+            </Form.Item>
+          )}
 
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} block>

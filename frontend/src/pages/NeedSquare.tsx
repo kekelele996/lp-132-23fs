@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form } from 'antd';
+import { Card, List, Tag, Button, Select, Input, Space, message, Modal, Rate, Form, Alert } from 'antd';
 import { HeartOutlined, ClockCircleOutlined, EnvironmentOutlined, UserOutlined, StarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { careNeedsApi, favoriteApi, reviewApi } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import { useNavigate } from 'react-router-dom';
+import { skillLabel, isProfessionalSkill, parseSkillCodes } from '../constants/skills';
 
 const { Search } = Input;
 const { Option } = Select;
@@ -12,12 +13,36 @@ const { Meta } = Card;
 
 const careTypeMap: Record<string, { label: string; color: string }> = {
   health_check: { label: '健康检查', color: 'blue' },
-  accompany: { label: '陪同就医', color: 'green' },
+  medical_assist: { label: '医疗协助', color: 'red' },
+  accompany: { label: '陪诊陪同', color: 'green' },
   daily_care: { label: '日常照料', color: 'orange' },
   shopping: { label: '代购代办', color: 'purple' },
   companionship: { label: '聊天陪伴', color: 'pink' },
   other: { label: '其他', color: 'default' },
 };
+
+// 志愿者可接单的服务类型：陪诊、聊天、代购、日常陪伴
+const VOLUNTEER_ALLOWED_CARE_TYPES = ['accompany', 'shopping', 'companionship'];
+
+interface SkillGap {
+  code: string;
+  label: string;
+}
+
+// 技能要求标签
+const SkillTags = ({ codes, size }: { codes?: string[]; size?: 'small' }) => (
+  <span className="flex flex-wrap gap-1">
+    {(codes || []).map((code) => (
+      <Tag
+        key={code}
+        color={isProfessionalSkill(code) ? 'red' : 'cyan'}
+        style={size === 'small' ? { marginInlineEnd: 0 } : undefined}
+      >
+        {isProfessionalSkill(code) ? '专业 · ' : ''}{skillLabel(code)}
+      </Tag>
+    ))}
+  </span>
+);
 
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: '待接单', color: 'orange' },
@@ -37,6 +62,12 @@ const NeedSquare = () => {
   const [reviewModal, setReviewModal] = useState(false);
   const [reviewForm] = Form.useForm();
   const [favorites, setFavorites] = useState<any[]>([]);
+  // 接单被拒时展示具体原因（缺少哪项能力 / 志愿者不可接）
+  const [rejectInfo, setRejectInfo] = useState<{
+    title: string;
+    detail: string;
+    gaps: SkillGap[];
+  } | null>(null);
 
   const fetchNeeds = async (params?: any) => {
     setLoading(true);
@@ -72,8 +103,57 @@ const NeedSquare = () => {
       message.success('接单成功');
       fetchNeeds();
     } catch (error: any) {
-      message.error(error.response?.data?.message || '接单失败');
+      const data = error.response?.data;
+      // 资格不符（技能不齐 / 志愿者接专业护理单）：弹出明确说明，订单仍保持待接单
+      if (data?.code === 'SKILL_NOT_MATCH' || data?.code === 'PROFESSIONAL_CARE_NOT_ALLOWED') {
+        const gaps: SkillGap[] =
+          data.code === 'SKILL_NOT_MATCH'
+            ? (data.missing_skills || [])
+            : (data.professional_skills || []);
+        setRejectInfo({
+          title: data.code === 'SKILL_NOT_MATCH' ? '接单失败：护理技能不齐备' : '志愿者不能承接专业护理',
+          detail: data.message || '接单失败',
+          gaps,
+        });
+      } else {
+        message.error(data?.message || '接单失败');
+      }
     }
+  };
+
+  // 当前用户是否为志愿者
+  const isVolunteer = user?.role === 'volunteer';
+
+  // 志愿者不能接健康检查、医疗协助等专业护理单（服务类型或任一专业技能要求即拦截）
+  const isProfessionalNeed = (need: any): boolean => {
+    if (!VOLUNTEER_ALLOWED_CARE_TYPES.includes(need.care_type)) return true;
+    return (need.required_skills || []).some((code: string) => isProfessionalSkill(code));
+  };
+
+  // 接单按钮：专业护理单对志愿者禁用并提示；其余情况点击后由后端逐项核对技能
+  const acceptButton = (need: any, inModal = false) => {
+    if (need.status !== 'pending') return null;
+    if (user?.role !== 'worker' && user?.role !== 'volunteer') return null;
+    if (isVolunteer && isProfessionalNeed(need)) {
+      return (
+        <Button
+          size={inModal ? 'middle' : 'small'}
+          disabled
+          title="志愿者只参与陪诊、聊天、代购和日常陪伴，不承接健康检查、医疗协助等专业护理"
+        >
+          仅专业护工可接
+        </Button>
+      );
+    }
+    return (
+      <Button
+        type="primary"
+        size={inModal ? 'middle' : 'small'}
+        onClick={(e) => { e.stopPropagation(); handleAccept(need.id); }}
+      >
+        接单
+      </Button>
+    );
   };
 
   const handleStart = async (id: string) => {
@@ -169,7 +249,8 @@ const NeedSquare = () => {
             onChange={(value) => fetchNeeds({ care_type: value })}
           >
             <Option value="health_check">健康检查</Option>
-            <Option value="accompany">陪同就医</Option>
+            <Option value="medical_assist">医疗协助</Option>
+            <Option value="accompany">陪诊陪同</Option>
             <Option value="daily_care">日常照料</Option>
             <Option value="shopping">代购代办</Option>
             <Option value="companionship">聊天陪伴</Option>
@@ -207,11 +288,7 @@ const NeedSquare = () => {
               onClick={() => openDetail(item)}
               className="h-full"
               actions={[
-                item.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') ? (
-                  <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleAccept(item.id); }}>
-                    接单
-                  </Button>
-                ) : null,
+                acceptButton(item),
                 item.status === 'accepted' && item.worker_id === user?.id ? (
                   <Button type="primary" size="small" onClick={(e) => { e.stopPropagation(); handleStart(item.id); }}>
                     开始服务
@@ -253,6 +330,15 @@ const NeedSquare = () => {
                         ¥{item.price}
                       </span>
                     </div>
+                    <div>
+                      <div className="text-gray-500 text-xs mb-1">技能要求：</div>
+                      <SkillTags codes={item.required_skills} size="small" />
+                    </div>
+                    {isVolunteer && isProfessionalNeed(item) && (
+                      <div className="text-red-500 text-xs">
+                        含健康检查/医疗协助等专业护理，志愿者不可接
+                      </div>
+                    )}
                     <div className="flex items-center text-gray-500 text-sm">
                       <ClockCircleOutlined className="mr-1" />
                       {dayjs(item.start_time).format('YYYY-MM-DD HH:mm')}
@@ -301,6 +387,34 @@ const NeedSquare = () => {
                   {careTypeMap[selectedNeed.care_type]?.label}
                 </Tag>
               </div>
+              <div className="flex">
+                <span className="w-24 shrink-0 text-gray-500">技能要求：</span>
+                <div>
+                  <SkillTags codes={selectedNeed.required_skills} />
+                  <p className="text-xs text-gray-400 mt-1">
+                    接单时系统逐项核对，全部具备才可接单；红色标签为专业护理技能，仅专业护工可接
+                  </p>
+                </div>
+              </div>
+              {isVolunteer && isProfessionalNeed(selectedNeed) && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="本单含健康检查、医疗协助等专业护理内容，志愿者不能接单。志愿者可参与陪诊、聊天、代购和日常陪伴。"
+                />
+              )}
+              {!isVolunteer && user?.role === 'worker' && (() => {
+                const mySkills = new Set(parseSkillCodes(user?.skills));
+                const gaps = (selectedNeed.required_skills || []).filter((c: string) => !mySkills.has(c));
+                if (gaps.length === 0) return null;
+                return (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message={`您当前缺少本单要求的技能：${gaps.map((c: string) => skillLabel(c)).join('、')}，请先在个人中心补充技能后再接单`}
+                  />
+                );
+              })()}
               <div className="flex">
                 <span className="w-24 text-gray-500">服务价格：</span>
                 <span className="text-orange-500 font-medium text-lg">¥{selectedNeed.price}</span>
@@ -362,9 +476,7 @@ const NeedSquare = () => {
 
             <div className="flex justify-end space-x-3 pt-4">
               {selectedNeed.status === 'pending' && (user?.role === 'worker' || user?.role === 'volunteer') && (
-                <Button type="primary" onClick={() => handleAccept(selectedNeed.id)}>
-                  接单
-                </Button>
+                acceptButton(selectedNeed, true)
               )}
               {selectedNeed.status === 'accepted' && selectedNeed.worker_id === user?.id && (
                 <Button type="primary" onClick={() => handleStart(selectedNeed.id)}>
@@ -415,6 +527,30 @@ const NeedSquare = () => {
             </div>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={rejectInfo?.title}
+        open={!!rejectInfo}
+        onCancel={() => setRejectInfo(null)}
+        footer={<Button type="primary" onClick={() => setRejectInfo(null)}>我知道了</Button>}
+      >
+        <Alert type="error" showIcon message={rejectInfo?.detail} />
+        {rejectInfo && rejectInfo.gaps.length > 0 && (
+          <div className="mt-4">
+            <div className="text-gray-600 mb-2">缺少/不可承接的能力：</div>
+            <Space wrap>
+              {rejectInfo.gaps.map((gap) => (
+                <Tag key={gap.code} color="red">
+                  {gap.label}
+                </Tag>
+              ))}
+            </Space>
+            <p className="text-gray-400 text-sm mt-3">
+              订单未被占用，仍保持“待接单”，请具备相应能力的服务者接单。
+            </p>
+          </div>
+        )}
       </Modal>
     </div>
   );

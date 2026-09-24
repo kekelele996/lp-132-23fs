@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS care_needs (
     title VARCHAR(100) NOT NULL,
     description TEXT NOT NULL,
     care_type VARCHAR(50) NOT NULL,
+    -- 家属对接单者的护理技能要求，存技能编码数组（对应后端技能目录 constants/skills.ts）
+    required_skills TEXT[] NOT NULL DEFAULT '{}',
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP,
     address TEXT NOT NULL,
@@ -114,6 +116,8 @@ CREATE INDEX IF NOT EXISTS idx_care_needs_status ON care_needs(status);
 CREATE INDEX IF NOT EXISTS idx_care_needs_child ON care_needs(child_id);
 CREATE INDEX IF NOT EXISTS idx_care_needs_worker ON care_needs(worker_id);
 CREATE INDEX IF NOT EXISTS idx_care_needs_time ON care_needs(start_time);
+-- 支持按技能要求筛选需求（如只看需要“血压测量”的单）
+CREATE INDEX IF NOT EXISTS idx_care_needs_required_skills ON care_needs USING GIN (required_skills);
 CREATE INDEX IF NOT EXISTS idx_messages_receiver ON messages(receiver_id);
 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(receiver_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewee ON reviews(reviewee_id);
@@ -121,16 +125,18 @@ CREATE INDEX IF NOT EXISTS idx_schedules_worker ON worker_schedules(worker_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON worker_schedules(date);
 
 -- 插入测试数据 (密码统一为: 123456)
+-- skills 使用技能编码（对应后端技能目录），以逗号分隔
 INSERT INTO users (username, password, real_name, phone, role, age, address, skills, introduction) VALUES
 ('child1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '张小明', '13800138001', 'child', 35, '北京市朝阳区', '', '孝顺的儿子'),
-('worker1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '李护工', '13800138002', 'worker', 40, '北京市海淀区', '血压测量、打针、输液', '有10年护理经验'),
-('worker2', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '王护士', '13800138003', 'worker', 35, '北京市朝阳区', '康复训练、日常照料', '专业康复护士'),
-('volunteer1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '赵志愿', '13800138004', 'volunteer', 25, '北京市东城区', '聊天陪伴', '大学生志愿者'),
+('worker1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '李护工', '13800138002', 'worker', 40, '北京市海淀区', 'blood_pressure,injection,infusion,medication_management', '有10年护理经验'),
+('worker2', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '王护士', '13800138003', 'worker', 35, '北京市朝阳区', 'rehabilitation,daily_care,meal_preparation', '专业康复护士'),
+('volunteer1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '赵志愿', '13800138004', 'volunteer', 25, '北京市东城区', 'companionship,escort_outdoor,shopping', '大学生志愿者'),
 ('admin1', '$2a$10$aKYK4fhQExRlfuk45F/P0uPaKbwztgyx32Fyw4VA9z91bGR56eUhq', '管理员', '13800138000', 'admin', 30, '北京市', '', '系统管理员');
 
 INSERT INTO elderly_profiles (child_id, name, gender, age, phone, medical_history, medication, address, emergency_contact, emergency_phone, notes) VALUES
 ((SELECT id FROM users WHERE username = 'child1'), '张大爷', '男', 78, '13900139001', '高血压、糖尿病', '降压药、胰岛素', '北京市朝阳区幸福小区3号楼2单元501', '张小明', '13800138001', '喜欢下棋，需要有人陪同散步');
 
-INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, start_time, address, duration_hours, price) VALUES
-((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '上门量血压', '每周三下午上门给老人量血压，记录数据', 'health_check', '2024-01-10 14:00:00', '北京市朝阳区幸福小区3号楼2单元501', 1.0, 80.00),
-((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪同就医', '下周一陪同老人去医院复查', 'accompany', '2024-01-15 08:00:00', '北京市朝阳区幸福小区3号楼2单元501', 4.0, 300.00);
+-- required_skills 为家属选择的护理技能要求；健康检查单要求血压测量（志愿者不可接），陪诊单要求陪诊陪同（志愿者可接）
+INSERT INTO care_needs (child_id, elderly_id, title, description, care_type, required_skills, start_time, address, duration_hours, price) VALUES
+((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '上门量血压', '每周三下午上门给老人量血压，记录数据', 'health_check', ARRAY['blood_pressure']::TEXT[], '2024-01-10 14:00:00', '北京市朝阳区幸福小区3号楼2单元501', 1.0, 80.00),
+((SELECT id FROM users WHERE username = 'child1'), (SELECT id FROM elderly_profiles WHERE name = '张大爷'), '陪同就医', '下周一陪同老人去医院复查', 'accompany', ARRAY['escort_outdoor']::TEXT[], '2024-01-15 08:00:00', '北京市朝阳区幸福小区3号楼2单元501', 4.0, 300.00);
